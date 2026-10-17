@@ -1,42 +1,100 @@
 
-name: Extrair projeto Android
+name: Extrair projeto e gerar APK
 
-on:
+'on':
   workflow_dispatch:
+  push:
+    paths:
+      - 'APKEditorPro-Android-GitHub.zip'
+      - '.github/workflows/extrair-projeto.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  extrair:
+  build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Baixar arquivos do repositorio
         uses: actions/checkout@v4
 
-      - name: Verificar e extrair ZIP
+      - name: Verificar arquivo ZIP
+        shell: bash
         run: |
-          set -e
-          ZIP="APKEditorPro-Android-GitHub.zip"
-          if [ ! -f "$ZIP" ]; then
-            echo "ERRO: arquivo ZIP nao encontrado na raiz."
+          if [ ! -f "APKEditorPro-Android-GitHub.zip" ]; then
+            echo "ERRO: ZIP nao encontrado na raiz do repositorio."
+            echo "Arquivos encontrados:"
             ls -la
             exit 1
           fi
-          mkdir -p extraido
-          unzip -o "$ZIP" -d extraido
-          echo "Conteudo do ZIP:"
-          find extraido -maxdepth 4 -type f | head -100
+          echo "ZIP encontrado."
 
-      - name: Publicar arquivos extraidos
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Instalar ferramentas Android
+        uses: android-actions/setup-android@v3
+
+      - name: Extrair projeto
+        shell: bash
         run: |
-          set -e
-          cp -a extraido/. .
-          rm -rf extraido
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .
-          if ! git diff --cached --quiet; then
-            git commit -m "Extrair arquivos do projeto Android"
-            git push
+          mkdir -p projeto
+          unzip -o "APKEditorPro-Android-GitHub.zip" -d projeto
+          echo "Conteudo extraido:"
+          find projeto -maxdepth 4 -type f | head -200
+
+      - name: Localizar projeto Gradle
+        shell: bash
+        run: |
+          ROOT="$GITHUB_WORKSPACE/projeto"
+
+          if [ -f "$ROOT/gradlew" ]; then
+            DIR="$ROOT"
+          else
+            DIR=$(find "$ROOT" -type f \
+              -name gradlew -print -quit | xargs -r dirname)
           fi
+
+          if [ -z "$DIR" ]; then
+            if [ -f "$ROOT/build.gradle" ] || \
+               [ -f "$ROOT/build.gradle.kts" ]; then
+              DIR="$ROOT"
+            else
+              DIR=$(find "$ROOT" -type f \
+                \( -name build.gradle -o \
+                   -name build.gradle.kts \) \
+                -print -quit | xargs -r dirname)
+            fi
+          fi
+
+          if [ -z "$DIR" ]; then
+            echo "ERRO: projeto Gradle nao encontrado."
+            echo "Verifique se o ZIP contem o codigo-fonte Android."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "Projeto localizado em: $DIR"
+
+      - name: Compilar aplicativo Android
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew assembleDebug
+          else
+            gradle assembleDebug
+          fi
+
+      - name: Publicar APK gerado
+        uses: actions/upload-artifact@v4
+        with:
+          name: APKEditorPro-APK
+          path: projeto/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
